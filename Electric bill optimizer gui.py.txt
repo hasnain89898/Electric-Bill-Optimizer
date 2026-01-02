@@ -1,0 +1,223 @@
+import tkinter as tk
+from tkinter import messagebox
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
+# ---------------- Configuration ----------------
+UNIT_RATE = 26        # Rs per kWh (Pakistan)
+PEAK_START = 17       # 5 PM
+PEAK_END = 23         # 11 PM
+
+# Built-in average wattages
+APPLIANCES_WATTS = {
+    "Fan": 75,
+    "Air Conditioner": 1500,
+    "Refrigerator": 200,
+    "LED Bulb": 15,
+    "Washing Machine": 500,
+    "Iron": 1000,
+    "Water Pump": 750,
+    "Laptop": 60,
+    "TV (LED)": 100,
+}
+
+# ---------------- Simple supervised ML model ----------------
+# Toy example mapping total hours/day -> combined monthly bill (Rs)
+X_train = np.array([[1],[2],[3],[4],[5],[6],[8],[10]])
+y_train = np.array([300, 650, 1000, 1350, 1700, 2050, 2750, 3450])
+ml_model = LinearRegression()
+ml_model.fit(X_train, y_train)
+
+# ---------------- State ----------------
+appliances_selected = {}  # name -> {wattage, hours, start24, end24, cost}
+
+# ---------------- Helpers ----------------
+def to_24h(hour_str, ampm):
+    """Convert 12h hour + AM/PM to 24h integer."""
+    h = int(hour_str)
+    if ampm == "PM" and h != 12:
+        h += 12
+    if ampm == "AM" and h == 12:
+        h = 0
+    return h
+
+def overlaps_peak(start24, end24):
+    """Check simple overlap with peak window [17,23). Assumes same-day range."""
+    # Handles cases like start < end; if equal or invalid, treat as no overlap
+    if start24 >= end24:
+        return False
+    return (PEAK_START < end24) and (start24 < PEAK_END)
+
+def auto_fill_wattage(*args):
+    name = appliance_var.get()
+    if name in APPLIANCES_WATTS:
+        entry_watt.delete(0, tk.END)
+        entry_watt.insert(0, str(APPLIANCES_WATTS[name]))
+
+def add_appliance():
+    try:
+        name = appliance_var.get().strip()
+        watt = float(entry_watt.get())
+        hours = float(entry_hours.get())
+        start_hour_12 = entry_start.get()
+        end_hour_12 = entry_end.get()
+        start_ampm_val = start_ampm.get()
+        end_ampm_val = end_ampm.get()
+
+        # Validate basics
+        if not (1 <= int(start_hour_12) <= 12 and 1 <= int(end_hour_12) <= 12):
+            messagebox.showerror("Error", "Hours must be 1–12 for AM/PM format.")
+            return
+        if hours <= 0:
+            messagebox.showerror("Error", "Hours per day must be greater than 0.")
+            return
+
+        # Convert to 24h
+        start24 = to_24h(start_hour_12, start_ampm_val)
+        end24 = to_24h(end_hour_12, end_ampm_val)
+
+        # Monthly consumption and cost
+        monthly_kwh = (watt * hours * 30) / 1000.0
+        monthly_cost = monthly_kwh * UNIT_RATE
+
+        appliances_selected[name] = {
+            "wattage": watt,
+            "hours": hours,
+            "start24": start24,
+            "end24": end24,
+            "cost": monthly_cost,
+            "range_str": f"{start_hour_12} {start_ampm_val}–{end_hour_12} {end_ampm_val}"
+        }
+
+        messagebox.showinfo("Added",
+            f"{name} added!\n"
+            f"Wattage: {watt} W • Hours/day: {hours}\n"
+            f"Time: {appliances_selected[name]['range_str']}\n"
+            f"Monthly Bill: Rs {monthly_cost:.0f}"
+        )
+    except ValueError:
+        messagebox.showerror("Error", "Please enter valid numeric values for wattage and hours.")
+
+def calculate_total():
+    if not appliances_selected:
+        messagebox.showerror("Error", "No appliances added!")
+        return
+
+    # Totals
+    total_cost = sum(d["cost"] for d in appliances_selected.values())
+    total_hours = sum(d["hours"] for d in appliances_selected.values())
+    ml_pred = float(ml_model.predict([[total_hours]])[0])
+
+    # Suggestions per appliance
+    sugg_lines = []
+    for name, d in appliances_selected.items():
+        if overlaps_peak(d["start24"], d["end24"]):
+            sugg_lines.append(f"⚠ {name} ({d['range_str']}): Peak overlap (5–11 PM). Shift to off-peak for savings.")
+        else:
+            sugg_lines.append(f"✅ {name} ({d['range_str']}): Avoids peak window.")
+
+    result = (
+        f"Total Estimated Bill: Rs {total_cost:.0f}\n"
+        f"ML Predicted Bill (combined): Rs {ml_pred:.0f}\n\n"
+        + "\n".join(sugg_lines)
+    )
+    messagebox.showinfo("Result", result)
+
+    show_pie_chart()
+
+def show_pie_chart():
+    labels = list(appliances_selected.keys())
+    costs = [d["cost"] for d in appliances_selected.values()]
+    if not costs:
+        return
+
+    plt.figure(figsize=(6, 6))
+    plt.pie(costs, labels=labels, autopct='%1.1f%%', startangle=140)
+    plt.title("Appliance-wise monthly bill share")
+    plt.tight_layout()
+    plt.show()
+
+# ---------------- GUI ----------------
+root = tk.Tk()
+root.title("⚡ Multi-Appliance Electricity Bill Optimizer (Pakistan) ⚡")
+root.geometry("740x640")
+root.configure(bg="#121826")  # deep dark blue-gray
+
+# Heading
+tk.Label(root, text="Electricity Bill Optimizer", font=("Segoe UI", 20, "bold"),
+         fg="#00E5FF", bg="#121826").pack(pady=12)
+
+# Appliance dropdown
+appliance_var = tk.StringVar(value="Air Conditioner")
+appliance_var.trace("w", auto_fill_wattage)
+
+tk.Label(root, text="Select appliance:", font=("Segoe UI", 12), fg="#E0E6ED", bg="#121826").pack()
+appliance_menu = tk.OptionMenu(root, appliance_var, *APPLIANCES_WATTS.keys())
+appliance_menu.config(font=("Segoe UI", 11), bg="#1F2937", fg="#E0E6ED", activebackground="#374151", activeforeground="#FFFFFF")
+appliance_menu.pack(pady=6)
+
+# Wattage
+tk.Label(root, text="Wattage (auto-filled, editable):", font=("Segoe UI", 12), fg="#E0E6ED", bg="#121826").pack()
+entry_watt = tk.Entry(root, font=("Segoe UI", 12), bg="#0B1220", fg="#E0E6ED", insertbackground="#E0E6ED")
+entry_watt.pack(pady=6)
+entry_watt.insert(0, str(APPLIANCES_WATTS[appliance_var.get()]))
+
+# Hours/day
+tk.Label(root, text="Hours per day:", font=("Segoe UI", 12), fg="#E0E6ED", bg="#121826").pack()
+entry_hours = tk.Entry(root, font=("Segoe UI", 12), bg="#0B1220", fg="#E0E6ED", insertbackground="#E0E6ED")
+entry_hours.pack(pady=6)
+entry_hours.insert(0, "6")
+
+# Start time (AM/PM)
+tk.Label(root, text="Usage start time:", font=("Segoe UI", 12), fg="#E0E6ED", bg="#121826").pack(pady=(10,2))
+start_frame = tk.Frame(root, bg="#121826")
+start_frame.pack(pady=2)
+entry_start = tk.Entry(start_frame, width=5, font=("Segoe UI", 12), bg="#0B1220", fg="#E0E6ED", insertbackground="#E0E6ED")
+entry_start.insert(0, "7")
+entry_start.pack(side=tk.LEFT, padx=4)
+start_ampm = tk.StringVar(value="AM")
+start_ampm_menu = tk.OptionMenu(start_frame, start_ampm, "AM", "PM")
+start_ampm_menu.config(font=("Segoe UI", 11), bg="#1F2937", fg="#E0E6ED", activebackground="#374151", activeforeground="#FFFFFF")
+start_ampm_menu.pack(side=tk.LEFT, padx=4)
+
+# End time (AM/PM)
+tk.Label(root, text="Usage end time:", font=("Segoe UI", 12), fg="#E0E6ED", bg="#121826").pack(pady=(10,2))
+end_frame = tk.Frame(root, bg="#121826")
+end_frame.pack(pady=2)
+entry_end = tk.Entry(end_frame, width=5, font=("Segoe UI", 12), bg="#0B1220", fg="#E0E6ED", insertbackground="#E0E6ED")
+entry_end.insert(0, "8")
+entry_end.pack(side=tk.LEFT, padx=4)
+end_ampm = tk.StringVar(value="PM")
+end_ampm_menu = tk.OptionMenu(end_frame, end_ampm, "AM", "PM")
+end_ampm_menu.config(font=("Segoe UI", 11), bg="#1F2937", fg="#E0E6ED", activebackground="#374151", activeforeground="#FFFFFF")
+end_ampm_menu.pack(side=tk.LEFT, padx=4)
+
+# Buttons
+def hover_enter_blue(e): btn_add.config(bg="#0EA5E9")
+def hover_leave_blue(e): btn_add.config(bg="#0284C7")
+def hover_enter_green(e): btn_calc.config(bg="#22C55E")
+def hover_leave_green(e): btn_calc.config(bg="#16A34A")
+
+btn_add = tk.Button(root, text="Add appliance", command=add_appliance,
+                    font=("Segoe UI", 12, "bold"), bg="#0284C7", fg="#FFFFFF",
+                    activebackground="#0EA5E9", activeforeground="#FFFFFF", padx=12, pady=6)
+btn_add.pack(pady=12)
+btn_add.bind("<Enter>", hover_enter_blue)
+btn_add.bind("<Leave>", hover_leave_blue)
+
+btn_calc = tk.Button(root, text="Calculate total bill", command=calculate_total,
+                     font=("Segoe UI", 12, "bold"), bg="#16A34A", fg="#FFFFFF",
+                     activebackground="#22C55E", activeforeground="#FFFFFF", padx=12, pady=6)
+btn_calc.pack(pady=6)
+btn_calc.bind("<Enter>", hover_enter_green)
+btn_calc.bind("<Leave>", hover_leave_green)
+
+# Footer
+footer = tk.Label(root,
+    text=f"Unit price: Rs {UNIT_RATE}/kWh • Peak window: 5 PM–11 PM • AM/PM supported",
+    font=("Segoe UI", 10), fg="#9CA3AF", bg="#121826"
+)
+footer.pack(pady=10)
+
+root.mainloop()
